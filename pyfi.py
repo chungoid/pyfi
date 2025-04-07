@@ -5,8 +5,6 @@ from textual.screen import Screen
 from textual.widgets import Input, Static
 
 # local
-
-# local
 from tools.wifi_scanner.wifi_scanner import WifiScanner
 from config.logging import setup_logging
 setup_logging()
@@ -21,13 +19,13 @@ AVAILABLE_TOOLS = [
 
 HELP_TEXT = (
     "[bold underline]Available commands:[/]\n"
-    "help             - Show this help message\n"
-    "list             - List available tools\n"
     "run <number>     - Run a tool by its number (e.g., run 1)\n"
+    "list             - List available tools\n"
+    "help             - Show this help message\n"    
     "exit             - Exit current tool window or app"
 )
 
-class WiPy(Screen):
+class PyFi(Screen):
     def compose(self) -> ComposeResult:
         yield Static(HELP_TEXT, id="main_help", markup=True)
         self.input_field = Input(placeholder="Type command...", id="main_input")
@@ -71,7 +69,7 @@ class WiPy(Screen):
 class Main(App):
     async def on_mount(self):
         self.selected_tool = None  # To store a selected tool instance
-        await self.push_screen(WiPy())
+        await self.push_screen(PyFi())
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
