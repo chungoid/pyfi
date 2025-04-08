@@ -15,7 +15,9 @@ from rich.table import Table
 
 
 # local
-from tools.tool import Tool, ToolScreen
+from utils.gps import global_gps
+from tools.tool import *
+from tools.tool_helpers import *
 from tools.wifi_scanner.wifi_data import (
     networks, devices_with_ap, devices_without_ap, other_devices, associations, packet_queue, mac_lookup_queue
 )
@@ -35,14 +37,17 @@ class WifiScanner(Tool):
         self.logger.debug("WifiScanner initialized with no selected interface.")
         # Default to 2.4 GHz channels: 1-14.
         self.scanning_channels = list(range(1, 15))
-        # Initialize async MAC lookup (see previous refactors).
         try:
             self.mac_lookup = AsyncMacLookup()
         except Exception as e:
             self.logger.error("Error initializing MAC lookup: %s", e)
             self.mac_lookup = None
-        # Unique wpa-sec api key for downloading founds
-        self.wpa_sec_key = ""  # New property to store the WPA-sec API key.
+
+        self.wpa_sec_key = ""  # API key for WPA-sec results
+
+        # Optionally, attach a GPS instance to the scanner
+        self.gps = global_gps
+
 
     def get_screen(self):
         self.logger.debug("Returning WifiScannerScreen for tool.")
@@ -449,14 +454,23 @@ class WifiScanner(Tool):
         if not self.selected_wlan_interface['name']:
             self.logger.error("No selected WLAN interface set. Please set an interface first.")
             return
-        self.logger.info("Starting WiFi scanning on interface: %s", self.selected_wlan_interface['name'])
+
+        iface = self.selected_wlan_interface['name']
+        current_mode = get_iw_mode(iface)
+        if current_mode.lower() != "monitor":
+            self.logger.info("Interface %s is in %s mode, switching to monitor mode...", iface, current_mode)
+            if not set_interface_to_monitor(iface):
+                self.logger.error("Failed to set interface %s to monitor mode. Aborting scan.", iface)
+                return
+        else:
+            self.logger.debug("Interface %s is already in monitor mode.", iface)
+
+        self.logger.info("Starting WiFi scanning on interface: %s", iface)
         self.active = True
         self.stop_event.clear()
-        threading.Thread(target=self.change_channel, args=(self.selected_wlan_interface['name'], 2),
-                         daemon=True).start()
+        threading.Thread(target=self.change_channel, args=(iface, 2), daemon=True).start()
         threading.Thread(target=self.process_packets, daemon=True).start()
-        threading.Thread(target=self.start_sniffing, args=(self.selected_wlan_interface['name'],), daemon=True).start()
-        # Start the MAC lookup worker thread to process the vendor lookups.
+        threading.Thread(target=self.start_sniffing, args=(iface,), daemon=True).start()
         threading.Thread(target=self.mac_lookup_worker, daemon=True).start()
         self.logger.info("WiFi scanning threads started.")
 
@@ -494,9 +508,18 @@ class WifiScanner(Tool):
         table.add_column("Enc", style="red")
         table.add_column("Beacons", style="white")
         table.add_column("Vendor", style="blue")
-        table.add_column("Password", style="white")  # NEW password column
+        table.add_column("Password", style="white")
+        table.add_column("GPS", style="cyan")  # New GPS column
+
         net_list = list(networks.items())
         for idx, (bssid, info) in enumerate(net_list, start=1):
+            # Use the cached GPS fix if available.
+            if self.gps is not None and self.gps.last_fix is not None:
+                coords = self.gps.last_fix
+                gps_str = f"{coords[0]:.6f}, {coords[1]:.6f}"
+            else:
+                gps_str = "-"
+
             row = [
                 str(idx),
                 bssid,
@@ -507,7 +530,8 @@ class WifiScanner(Tool):
                 info.get('Encryption', 'Open'),
                 str(info.get('Beacons', 0)),
                 info.get('Vendor', '-'),
-                info.get('Password', '-')  # Display password if exists, otherwise '-'
+                info.get('Password', '-'),
+                gps_str
             ]
             table.add_row(*row)
         return table

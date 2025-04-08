@@ -6,10 +6,24 @@ from textual.widgets import Input, Static
 
 # local
 from tools.wifi_scanner.wifi_scanner import WifiScanner
-from config.logging import setup_logging
-setup_logging()
+from config.global_logging import setup_logging
+from utils.gps import global_gps
 from config.oui_lookup import check_and_update_vendors
-check_and_update_vendors()
+
+def setup():
+    # run at startup
+    setup_functions = [
+        setup_logging,
+        check_and_update_vendors,
+        # etc
+    ]
+
+    for func in setup_functions:
+        try:
+            func()
+            logging.debug(f"{func.__name__} completed successfully.")
+        except Exception as e:
+            logging.exception(f"Error in {func.__name__}: {e}")
 
 # Define a list of available tools as tuples of (tool name, tool class)
 AVAILABLE_TOOLS = [
@@ -69,9 +83,11 @@ class PyFi(Screen):
 class Main(App):
     async def on_mount(self):
         self.selected_tool = None  # To store a selected tool instance
+        self.gps = global_gps # global gps instance from utils/gps.py
         await self.push_screen(PyFi())
 
 if __name__ == "__main__":
+    setup()
     logging.basicConfig(level=logging.INFO)
     Main().run()
 
