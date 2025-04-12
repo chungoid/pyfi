@@ -1,4 +1,5 @@
 import logging
+import os
 import re
 import subprocess
 import time
@@ -7,9 +8,9 @@ import time
 from utils.helpers import run_suppressed_cmd
 
 
-###########################
-##### wlan interfaces #####
-###########################
+######################
+##### interfaces #####
+######################
 def get_wlan_interfaces() -> list:
     """
     Gather available wireless interfaces by running the 'iw dev' command.
@@ -28,6 +29,31 @@ def get_wlan_interfaces() -> list:
                     interfaces.append(iface)
     return interfaces if interfaces else None
 
+def get_eth_interfaces() -> list:
+    """
+    Gather available Ethernet interfaces by listing /sys/class/net,
+    excluding wireless (wlan, wlx, etc.) and loopback.
+    Returns a list of interface names, or None if none are found.
+    """
+    try:
+        all_ifaces = os.listdir('/sys/class/net')
+    except Exception:
+        return None
+
+    eth_ifaces = []
+    for iface in all_ifaces:
+        # Exclude loopback
+        if iface == 'lo':
+            continue
+        # Exclude known wireless prefixes
+        if re.match(r'^(wlan|wlx|wifi)', iface):
+            continue
+        # Ensure valid name
+        if re.match(r'^[a-zA-Z0-9_-]+$', iface):
+            eth_ifaces.append(iface)
+
+    return eth_ifaces if eth_ifaces else None
+
 def get_gateway_for_interface(iface: str) -> str:
     """
     Retrieve the default gateway for the given interface using 'ip route show default'.
@@ -40,6 +66,35 @@ def get_gateway_for_interface(iface: str) -> str:
                 via_index = parts.index("via")
                 return parts[via_index + 1]
             except (ValueError, IndexError):
+                return ""
+    return ""
+
+def get_netmask_for_interface(iface: str) -> str:
+    """
+    Retrieve the netmask (in dotted decimal format) for the given interface.
+    Parses the output of 'ip addr show <iface>' and converts the CIDR suffix.
+    """
+    from utils.helpers import run_suppressed_cmd  # use your helper for command execution
+    output = run_suppressed_cmd(f"ip addr show {iface}")
+    for line in output.splitlines():
+        line = line.strip()
+        if line.startswith("inet ") and "inet6" not in line:
+            parts = line.split()
+            try:
+                # parts[1] is like "192.168.1.100/24"
+                ip_cidr = parts[1]
+                ip, cidr_str = ip_cidr.split('/')
+                cidr = int(cidr_str)
+                # Convert CIDR to dotted decimal netmask
+                mask = (0xffffffff >> (32 - cidr)) << (32 - cidr)
+                netmask = "{}.{}.{}.{}".format(
+                    (mask >> 24) & 0xff,
+                    (mask >> 16) & 0xff,
+                    (mask >> 8) & 0xff,
+                    mask & 0xff
+                )
+                return netmask
+            except (IndexError, ValueError):
                 return ""
     return ""
 
@@ -69,13 +124,14 @@ def get_mac_for_interface(iface: str) -> str:
 
 def get_protocol_for_interface(iface: str) -> str:
     """
-    Determine the protocol type for the given interface.
-    For example, if the interface name contains 'wlan' or 'wlx', assume 'wlan'.
+    Check /sys/class/net/<iface>/wireless existence to detect wireless,
+    otherwise treat as Ethernet.
     """
-    if "wlan" in iface or "wlx" in iface:
+    wireless_path = f"/sys/class/net/{iface}/wireless"
+    if os.path.isdir(wireless_path):
         return "wlan"
-    return "unknown"
-
+    # If there's a device type file, you can inspect it; but default to eth
+    return "eth"
 
 def set_interface_to_monitor(iface: str, stage_delay: float = 1.0) -> bool:
     """

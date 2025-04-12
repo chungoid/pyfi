@@ -31,12 +31,13 @@ class WifiScanner(Tool):
             'gateway': "",
             'ip': ""
         }
+        self.freq = 2
         self.stop_event = threading.Event()
         self.last_print_time = time.time()
-        self.logger = logging.getLogger("Tool.wifiscanner")
+        self.logger = logging.getLogger(__name__.lower())
         self.logger.debug("WifiScanner initialized with no selected interface.")
         # Default to 2.4 GHz channels: 1-14.
-        self.scanning_channels = list(range(1, 15))
+        self.scanning_channels = list(range(1, 12))
         try:
             self.mac_lookup = AsyncMacLookup()
         except Exception as e:
@@ -45,16 +46,14 @@ class WifiScanner(Tool):
 
         self.wpa_sec_key = ""  # API key for WPA-sec results
 
-        # Optionally, attach a GPS instance to the scanner
+        # attach GPS instance to the scanner
         self.gps = global_gps
-
 
     def get_screen(self):
         self.logger.debug("Returning WifiScannerScreen for tool.")
         return WifiScannerScreen(self)
 
     def compose_status(self) -> str:
-        # Optionally, you could keep this method for use with the "show info" command
         if self.selected_wlan_interface['name']:
             return (
                 f"[bold]WiFi Scanner Info[/bold]\n"
@@ -73,94 +72,103 @@ class WifiScanner(Tool):
         lower_cmd = command.lower().strip()
         self.logger.debug("Handling custom command: '%s'", command)
 
-        if lower_cmd == "help":
-            return self.get_help()
+        try:
+            # Special commands first for immediate handling
+            if lower_cmd == "help":
+                return self.get_help()
 
-        elif lower_cmd == "list interfaces":
-            if self.available_wlan_interfaces:
-                lines = ["Available interfaces:"]
-                for idx, iface in enumerate(self.available_wlan_interfaces, start=1):
-                    lines.append(f"{idx}. {iface}")
-                return "\n".join(lines) + "\nTip: Use 'set interface <number>' to choose an interface."
-            else:
-                return "No WLAN interfaces available."
-
-        elif lower_cmd.startswith("set interface "):
-            selection = command[len("set interface "):].strip()
-            if selection.isdigit():
-                idx = int(selection) - 1
-                if 0 <= idx < len(self.available_wlan_interfaces):
-                    iface = self.available_wlan_interfaces[idx]
-                    self.populate_selected_wlan_interface(iface)
-                    return f"Interface selected: {iface}"
+            # Interface handling
+            elif lower_cmd == "list interfaces":
+                if self.available_wlan_interfaces:
+                    lines = ["Available interfaces:"]
+                    for idx, iface in enumerate(self.available_wlan_interfaces, start=1):
+                        lines.append(f"{idx}. {iface}")
+                    return "\n".join(lines) + "\nTip: Use 'set interface <number>' to choose an interface."
                 else:
-                    return f"Invalid interface number: {selection}"
+                    return "No WLAN interfaces available."
+
+            # Other commands
+            elif lower_cmd.startswith("set interface "):
+                selection = command[len("set interface "):].strip()
+                if selection.isdigit():
+                    idx = int(selection) - 1
+                    if 0 <= idx < len(self.available_wlan_interfaces):
+                        iface = self.available_wlan_interfaces[idx]
+                        self.populate_selected_wlan_interface(iface)
+                        return f"Interface selected: {iface}"
+                    else:
+                        return f"Invalid interface number: {selection}"
+                else:
+                    self.populate_selected_wlan_interface(selection)
+                    return f"Interface selected: {selection}"
+            
+            # Remaining command handling
+            elif lower_cmd.startswith("set freq"):
+                self.freq = command[len("set freq "):].strip()
+                if self.freq == "2":
+                    self.scanning_channels = list(range(1, 15))
+                elif self.freq == "5":
+                    # 5Ghz
+                    self.scanning_channels = [36, 40, 44, 48, 52, 56, 60, 64,
+                                            100, 104, 108, 112, 116, 120, 124, 128,
+                                            132, 136, 140, 144, 149, 153, 157, 161, 165]
+                elif self.freq in {"2,5", "5,2"}:
+                    self.scanning_channels = list(range(1, 15)) + [36, 40, 44, 48, 52, 56, 60, 64,
+                                                                100, 104, 108, 112, 116, 120, 124, 128,
+                                                                132, 136, 140, 144, 149, 153, 157, 161, 165]
+                else:
+                    return "Invalid frequency option. Use 'set freq 2', 'set freq 5' or 'set freq 2,5'."
+                return f"Scanning frequency set to: {self.freq}"
+
+            elif lower_cmd == "show info":
+                return self.compose_status()
+
+            elif lower_cmd == "list networks":
+                lines = ["Available Networks:"]
+                net_list = list(networks.items())
+                for idx, (bssid, info) in enumerate(net_list, start=1):
+                    ssid = info.get("SSID", "<hidden>")
+                    lines.append(f"{idx}. {ssid} ({bssid}) - Signal: {info.get('Signal', 'N/A')}")
+                return "\n".join(lines)
+
+            elif lower_cmd.startswith("connect "):
+                try:
+                    network_number = int(command[len("connect "):].strip())
+                    return self.connect_network(network_number)
+                except ValueError:
+                    return "Please provide a valid network number."
+
+            elif lower_cmd.startswith("set key"):
+                # Command syntax: set key <your_key>
+                key = command[len("set key"):].strip()
+                if not key:
+                    return "Please provide a WPA-sec API key. Usage: set key <your_key>"
+                self.wpa_sec_key = key
+                return "WPA-sec API key set."
+
+            elif lower_cmd == "download wpasec":
+                # Ensure that a WPA-sec API key has been set.
+                if not self.wpa_sec_key:
+                    return "WPA-sec API key not set. Use 'set key <your_key>' first."
+                # Call the download function
+                from config.helpers import download_from_wpasec
+                from config.paths import WPASEC_RESULTS_DIR
+                path = download_from_wpasec(self, self.wpa_sec_key, WPASEC_RESULTS_DIR)
+                if path:
+                    return f"Downloaded WPA-sec results to {path}"
+                else:
+                    return "Failed to download WPA-sec results."
+
+            elif lower_cmd == "debug":
+                # Special command to debug app state
+                return self.debug_app_state()
+
             else:
-                self.populate_selected_wlan_interface(selection)
-                return f"Interface selected: {selection}"
-
-        elif lower_cmd.startswith("set freq"):
-            freq = command[len("set freq "):].strip()
-            if freq == "2":
-                self.scanning_channels = list(range(1, 15))
-            elif freq == "5":
-                # Define a typical set of 5 GHz channels.
-                self.scanning_channels = [36, 40, 44, 48, 52, 56, 60, 64,
-                                          100, 104, 108, 112, 116, 120, 124, 128,
-                                          132, 136, 140, 144, 149, 153, 157, 161, 165]
-            elif freq in {"2,5", "5,2"}:
-                self.scanning_channels = list(range(1, 15)) + [36, 40, 44, 48, 52, 56, 60, 64,
-                                                               100, 104, 108, 112, 116, 120, 124, 128,
-                                                               132, 136, 140, 144, 149, 153, 157, 161, 165]
-            else:
-                return "Invalid frequency option. Use 'set freq 2', 'set freq 5' or 'set freq 2,5'."
-            return f"Scanning frequency set to: {freq}"
-
-        elif lower_cmd == "show info":
-            return self.compose_status()
-
-        elif lower_cmd == "list networks":
-            lines = ["Available Networks:"]
-            net_list = list(networks.items())
-            for idx, (bssid, info) in enumerate(net_list, start=1):
-                ssid = info.get("SSID", "<hidden>")
-                lines.append(f"{idx}. {ssid} ({bssid}) - Signal: {info.get('Signal', 'N/A')}")
-            return "\n".join(lines)
-
-        elif lower_cmd.startswith("connect "):
-            network_id = command[len("connect "):].strip()
-            return f"Attempting to connect to network {network_id}..."
-
-        elif lower_cmd.startswith("set key"):
-            # Command syntax: set key <your_key>
-            key = command[len("set key"):].strip()
-            if not key:
-                return "Please provide a WPA-sec API key. Usage: set key <your_key>"
-            self.wpa_sec_key = key
-            return "WPA-sec API key set."
-
-        elif lower_cmd == "download wpasec":
-            # Ensure that a WPA-sec API key has been set.
-            if not self.wpa_sec_key:
-                return "WPA-sec API key not set. Use 'set key <your_key>' first."
-            # Call the download function
-            from config.helpers import download_from_wpasec
-            from config.paths import WPASEC_RESULTS_DIR
-            path = download_from_wpasec(self, self.wpa_sec_key, WPASEC_RESULTS_DIR)
-            if path:
-                return f"Downloaded WPA-sec results to {path}"
-            else:
-                return "Failed to download WPA-sec results."
-
-        elif lower_cmd.startswith("connect "):
-            try:
-                network_number = int(command[len("connect "):].strip())
-            except ValueError:
-                return "Please provide a valid network number."
-            return self.connect_network(network_number)
-
-        else:
-            return f"Unknown command for WiFi Scanner: {command}"
+                return f"Unknown command: {command}. Type 'help' for usage."
+                
+        except Exception as e:
+            self.logger.exception(f"Error handling command '{command}': {e}")
+            return f"Error handling command: {e}"
 
     def get_custom_help(self) -> str:
         return (
@@ -178,6 +186,10 @@ class WifiScanner(Tool):
             "[bold]WPA-sec Commands:[/]\n"
             "  set key <your_key>    - Set the WPA-sec API key for downloading results\n"
             "  download wpasec       - Download WPA-sec results using the set API key\n\n"
+            "[bold]Navigation Commands:[/]\n"
+            "  back/exit             - Return to the main menu\n\n"
+            "[bold]Debugging:[/]\n"
+            "  debug                 - Display application debug information\n\n"
         )
 
     # --- Scanning Logic Methods ---
@@ -475,9 +487,35 @@ class WifiScanner(Tool):
         self.logger.info("WiFi scanning threads started.")
 
     def stop(self) -> None:
-        self.logger.info("Stopping WiFi scanning.")
+        """Override stop method to clean up background tasks and resources properly"""
+        self.logger.debug("Stopping WifiScanner tool")
+        
+        # Signal the channel changer and packet processor to stop
         self.stop_event.set()
+        
+        # Wait a moment for threads to notice the stop event
+        import time
+        time.sleep(0.2)
+        
+        # Clear any queued packets to prevent memory leaks
+        while not packet_queue.empty():
+            try:
+                packet_queue.get_nowait()
+            except:
+                pass
+                
+        while not mac_lookup_queue.empty():
+            try:
+                mac_lookup_queue.get_nowait()
+            except:
+                pass
+        
+        # Make sure active state is set to False
         self.active = False
+        self.logger.info("Wifi Scanner stopped completely")
+        
+        # Call parent stop method
+        super().stop()
 
     def compose(self) -> ComposeResult:
         from textual.widgets import Static
@@ -651,6 +689,23 @@ class WifiScanner(Tool):
         else:
             return f"Attempted connection to {ssid}, but no output was returned."
 
+    def debug_app_state(self) -> str:
+        """Debug command to display app state information."""
+        info = []
+        try:
+            # No need to get the running app, we can only debug when running
+            info.append("App debug information:")
+            info.append("To see screen information, use the debug command from any UI screen")
+            info.append("Tool information:")
+            info.append(f"Tool name: {self.name}")
+            info.append(f"Tool active: {self.active}")
+            info.append(f"Selected interface: {self.selected_wlan_interface.get('name', 'None')}")
+            info.append(f"Scanning Freq: {self.freq}")
+            return "\n".join(info)
+        except Exception as e:
+            self.logger.error("Error getting app state: %s", e)
+            return f"Error getting app state: {str(e)}"
+
 
 class WifiScannerScreen(ToolScreen):
     def compose(self) -> ComposeResult:
@@ -667,7 +722,24 @@ class WifiScannerScreen(ToolScreen):
 
     def on_mount(self) -> None:
         # Update scan tables every second.
-        self.set_interval(1, self.update_ui)
+        self.update_timer = self.set_interval(1, self.update_ui)
+        self.tool.logger.debug("WifiScannerScreen mounted and timer initialized")
+
+    def on_unmount(self) -> None:
+        """Called when the screen is removed from the DOM to clean up timers"""
+        self.tool.logger.debug("WifiScannerScreen unmounting, cleaning up timers")
+        try:
+            # Remove all timers to prevent callbacks after screen is gone
+            self.clear_intervals()
+            self.tool.logger.debug("Successfully cleared all intervals/timers")
+        except Exception as e:
+            self.tool.logger.error(f"Error clearing intervals during unmount: {e}")
+            
+        # Call parent unmount if it exists
+        try:
+            super().on_unmount()
+        except Exception as e:
+            self.tool.logger.debug(f"Parent on_unmount not found or error: {e}")
 
     def update_ui(self) -> None:
         self.query_one("#scan_table", Static).update(self.tool.get_network_table())
@@ -686,7 +758,15 @@ class WifiScannerScreen(ToolScreen):
         event.stop()
         command = event.value.strip()
         self.tool.logger.debug("Received command on WifiScannerScreen: '%s'", command)
-        if command.lower().startswith("set network"):
+        
+        # Handle navigation commands through the standardized method
+        is_nav_command = await self.tool.handle_navigation_command(self, command)
+        if is_nav_command:
+            return
+        
+        # Handle "set network" command
+        lower_cmd = command.lower().strip()
+        if lower_cmd.startswith("set network"):
             try:
                 network_num = int(command[len("set network "):].strip())
             except ValueError:
@@ -702,10 +782,20 @@ class WifiScannerScreen(ToolScreen):
                 response = "Network number out of range."
             self.query_one("#command_output", Static).update("> " + response)
             self.query_one("#tool_command", Input).value = ""
+        
+        # Handle all other commands through the tool
         else:
-            response = self.tool.handle_command(command)
-            self.query_one("#command_output", Static).update("> " + response)
-            self.query_one("#tool_command", Input).value = ""
+            try:
+                response = self.tool.handle_command(command)
+                self.query_one("#command_output", Static).update("> " + response)
+                self.query_one("#tool_command", Input).value = ""
+            except Exception as e:
+                self.tool.logger.error(f"Error processing command: {e}")
+                try:
+                    self.query_one("#command_output", Static).update(f"> Error: {e}")
+                    self.query_one("#tool_command", Input).value = ""
+                except:
+                    pass
 
 
 # --- The network interaction subscreen ---
@@ -734,40 +824,130 @@ class NetworkInteractionScreen(Screen):
             self.command_input = Input(placeholder="Enter network command...", id="network_command")
             yield self.command_input
         yield Footer()
+        
+    def on_mount(self) -> None:
+        """Initialize when screen is mounted"""
+        # Focus the command input immediately
+        try:
+            self.command_input.focus()
+        except Exception as e:
+            self.scanner_tool.logger.error(f"Error setting initial focus: {e}")
+            
+        # Set up periodic check to ensure input stays focused
+        self.focus_timer = self.set_interval(3.0, self.ensure_input_focused)
+        self.scanner_tool.logger.debug("NetworkInteractionScreen mounted and timer initialized")
+        
+    def on_unmount(self) -> None:
+        """Clean up timers when screen is removed"""
+        self.scanner_tool.logger.debug("NetworkInteractionScreen unmounting, cleaning up timers")
+        try:
+            # Remove all timers
+            self.clear_intervals()
+            self.scanner_tool.logger.debug("Successfully cleared all intervals/timers")
+        except Exception as e:
+            self.scanner_tool.logger.error(f"Error clearing intervals during unmount: {e}")
+            
+    def ensure_input_focused(self) -> None:
+        """Periodically ensure command input has focus"""
+        try:
+            if hasattr(self, "command_input") and not self.command_input.has_focus:
+                self.scanner_tool.logger.debug("Network input field lost focus, refocusing")
+                self.command_input.focus()
+        except Exception as e:
+            self.scanner_tool.logger.error(f"Error ensuring network input focus: {e}")
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         event.stop()
         command = event.value.strip()
-        response = self.handle_network_command(command)
-        self.query_one("#network_command_output", Static).update("> " + response)
-        self.query_one("#network_command", Input).value = ""
-
-    def handle_network_command(self, command: str) -> str:
+        
+        # Handle navigation commands through the standardized method
+        is_nav_command = await self.scanner_tool.handle_navigation_command(self, command)
+        if is_nav_command:
+            return
+        
+        # Handle "back" command specially for this screen (just goes back to scanner)
         lower_cmd = command.lower().strip()
-        if lower_cmd == "help":
-            return (
-                "Network Commands:\n"
-                "  help     - Show this help message\n"
-                "  connect  - Connect to this network\n"
-                "  details  - Show detailed information\n"
-                "  back     - Return to scanning screen"
-            )
-        elif lower_cmd == "details":
-            bssid, info = self.selected_network
-            return (
-                f"SSID: {info.get('SSID', '<hidden>')}\n"
-                f"BSSID: {bssid}\n"
-                f"Signal: {info.get('Signal', 'N/A')}\n"
-                f"Channel: {info.get('Channel', 'Unknown')}\n"
-                f"Encryption: {info.get('Encryption', 'Open')}\n"
-                f"Data Rate: {info.get('Data Rate', 0):.2f}\n"
-                f"Beacons: {info.get('Beacons', 0)}\n"
-                f"Data: {info.get('Data', 0)}"
-            )
-        elif lower_cmd == "connect":
-            return f"Attempting to connect to {self.selected_network[1].get('SSID', '<hidden>')}..."
-        elif lower_cmd == "back":
-            self.app.pop_screen()
-            return "Returning to scanning screen."
-        else:
-            return f"Unknown network command: {command}"
+        if lower_cmd == "back":
+            try:
+                self.scanner_tool.logger.debug("Popping screen to return to scanner")
+                self.app.pop_screen()
+                return
+            except Exception as e:
+                self.scanner_tool.logger.error(f"Error returning to scanner: {e}")
+                try:
+                    self.query_one("#network_command_output", Static).update(f"> Error: {e}")
+                except:
+                    pass
+                return
+        
+        # If we reach here, it's a normal command
+        try:
+            response = await self.handle_network_command(command)
+            self.query_one("#network_command_output", Static).update("> " + response)
+            self.query_one("#network_command", Input).value = ""
+        except Exception as e:
+            self.scanner_tool.logger.error(f"Error processing command: {e}")
+            try:
+                self.query_one("#network_command_output", Static).update(f"> Error: {e}")
+                self.query_one("#network_command", Input).value = ""
+            except:
+                pass
+
+    async def handle_network_command(self, command: str) -> str:
+        lower_cmd = command.lower().strip()
+        try:
+            if lower_cmd == "help":
+                return (
+                    "Network Commands:\n"
+                    "  help     - Show this help message\n"
+                    "  connect  - Connect to this network\n"
+                    "  details  - Show detailed information\n"
+                    "  back     - Return to scanning screen\n"
+                    "  main     - Return to main menu\n"
+                    "  debug    - Display application debug information"
+                )
+            elif lower_cmd == "details":
+                bssid, info = self.selected_network
+                return (
+                    f"SSID: {info.get('SSID', '<hidden>')}\n"
+                    f"BSSID: {bssid}\n"
+                    f"Signal: {info.get('Signal', 'N/A')}\n"
+                    f"Channel: {info.get('Channel', 'Unknown')}\n"
+                    f"Encryption: {info.get('Encryption', 'Open')}\n"
+                    f"Data Rate: {info.get('Data Rate', 0):.2f}\n"
+                    f"Beacons: {info.get('Beacons', 0)}\n"
+                    f"Data: {info.get('Data', 0)}"
+                )
+            elif lower_cmd == "connect":
+                return f"Attempting to connect to {self.selected_network[1].get('SSID', '<hidden>')}..."
+            elif lower_cmd == "debug":
+                # Get debug info about app state
+                try:
+                    info = []
+                    info.append("App debug information:")
+                    
+                    # Use direct app reference
+                    app = self.app
+                    info.append(f"App type: {type(app).__name__}")
+                    info.append(f"Screen stack size: {len(app.screen_stack)}")
+                    info.append(f"Current screen: {type(self).__name__}")
+                    
+                    info.append("Screens in stack:")
+                    for i, screen in enumerate(app.screen_stack):
+                        info.append(f"  {i}: {type(screen).__name__}")
+                        
+                    # Add network details
+                    bssid, net_info = self.selected_network
+                    info.append("\nNetwork information:")
+                    info.append(f"BSSID: {bssid}")
+                    info.append(f"SSID: {net_info.get('SSID', '<hidden>')}")
+                    
+                    return "\n".join(info)
+                except Exception as e:
+                    self.scanner_tool.logger.error("Error in debug command: %s", e)
+                    return f"Error in debug command: {e}"
+            else:
+                return f"Unknown command: {command}. Type 'help' for usage."
+        except Exception as e:
+            self.scanner_tool.logger.error(f"Error in NetworkInteractionScreen handling command '{command}': {e}")
+            return f"Error handling command: {e}"

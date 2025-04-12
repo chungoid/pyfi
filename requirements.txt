@@ -25,3 +25,4 @@ typing_extensions==4.13.1
 uc-micro-py==1.0.3
 urllib3==2.3.0
 yarl==1.19.0
+PyYAML~=6.0.2

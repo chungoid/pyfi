@@ -1,0 +1,13 @@
+# tools/network_mapper/defaults.yaml
+
+default_extras:
+  # long flags with values
+  min-rate: "4500"
+  max-rtt-timeout: "1500ms"
+  timing: "4"            # single‑dash -T4
+  version-intensity: "2"
+
+  # standalone flags (no value)
+  privileged:            # becomes "--privileged"
+
+user_extras: {}
